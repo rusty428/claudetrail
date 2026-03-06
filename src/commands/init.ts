@@ -67,23 +67,34 @@ export function configureHooks(): void {
     const existing = (hooks[eventName] || []) as Record<string, unknown>[];
 
     if (hasClaudetrailHook(existing)) {
-      // Upgrade existing entry: replace old `claudetrail collect` with `claudetrail hook`
+      // Upgrade existing entries: replace old `claudetrail collect` with `claudetrail hook`
+      // then remove duplicates (keep first claudetrail entry + all non-claudetrail entries)
+      let foundClaudetrail = false;
+      const deduped: Record<string, unknown>[] = [];
       for (const entry of existing) {
         const innerHooks = entry.hooks as Record<string, unknown>[];
-        if (innerHooks) {
-          for (const ih of innerHooks) {
-            if ((ih.command as string)?.includes('claudetrail')) {
-              ih.command = 'claudetrail hook';
-              ih.timeout = HOOK_TIMEOUTS[eventName];
+        const isClaudetrail = innerHooks?.some((ih) => (ih.command as string)?.includes('claudetrail'));
+        if (isClaudetrail) {
+          if (!foundClaudetrail) {
+            for (const ih of innerHooks) {
+              if ((ih.command as string)?.includes('claudetrail')) {
+                ih.command = 'claudetrail hook';
+                ih.timeout = HOOK_TIMEOUTS[eventName];
+              }
             }
+            deduped.push(entry);
+            foundClaudetrail = true;
           }
+          // Skip duplicates
+        } else {
+          deduped.push(entry);
         }
       }
+      hooks[eventName] = deduped;
     } else {
       existing.push(makeHookEntry(HOOK_TIMEOUTS[eventName]));
+      hooks[eventName] = existing;
     }
-
-    hooks[eventName] = existing;
   }
 
   settings.hooks = hooks;
