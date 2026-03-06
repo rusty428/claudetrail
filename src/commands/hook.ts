@@ -1,26 +1,14 @@
 import { readConfig, readClaudeJson } from '../config';
 import { sendEvent } from '../utils/sendEvent';
 import { uploadTranscript } from '../utils/uploadTranscript';
-import * as path from 'path';
-import * as os from 'os';
 import * as https from 'https';
 import * as url from 'url';
 
 interface HookInput {
   hook_event_name: string;
   session_id: string;
-  cwd?: string;
-  // SessionStart fields
-  permission_mode?: string;
-  // PostToolUse / PostToolUseFailure fields
-  tool_name?: string;
-  tool_input?: Record<string, unknown>;
-  tool_output?: string;
-  duration_ms?: number;
-  was_successful?: boolean;
-  error_type?: string;
-  // Stop fields
-  stop_hook_active?: boolean;
+  transcript_path?: string;
+  [key: string]: unknown;
 }
 
 function readStdin(): Promise<string> {
@@ -56,59 +44,70 @@ function fireAndForgetIngest(baseUrl: string, apiKey: string, payload: Record<st
   req.end();
 }
 
-function handleSessionStart(config: { baseUrl: string; apiKey: string }, input: HookInput): void {
-  sendEvent(config.baseUrl, config.apiKey, {
-    eventType: 'SessionStart',
-    sessionId: input.session_id,
-    timestamp: new Date().toISOString(),
-    payload: {
-      cwd: input.cwd,
-      permissionMode: input.permission_mode,
-    },
-  });
+function extractStopSummary(claudeJson: Record<string, unknown>): Record<string, unknown> {
+  const projects = claudeJson.projects as Record<string, Record<string, unknown>> | undefined;
+  if (!projects) return {};
+
+  // Get the most recently active project's metrics
+  let latestProject: Record<string, unknown> | null = null;
+  let latestTime = '';
+  for (const proj of Object.values(projects)) {
+    const lastActive = proj.lastActiveAt as string || '';
+    if (lastActive > latestTime) {
+      latestTime = lastActive;
+      latestProject = proj;
+    }
+  }
+
+  if (!latestProject) return {};
+
+  return {
+    costUsd: latestProject.totalCost,
+    durationMs: latestProject.totalDurationMs,
+    apiDurationMs: latestProject.totalApiDurationMs,
+    tokensIn: latestProject.totalInputTokens,
+    tokensOut: latestProject.totalOutputTokens,
+    cacheCreation: latestProject.totalCacheCreationTokens,
+    cacheRead: latestProject.totalCacheReadTokens,
+    linesAdded: latestProject.linesAdded,
+    linesRemoved: latestProject.linesRemoved,
+    modelUsage: latestProject.modelUsage,
+  };
 }
 
-function handlePostToolUse(config: { baseUrl: string; apiKey: string }, input: HookInput): void {
-  sendEvent(config.baseUrl, config.apiKey, {
-    eventType: 'PostToolUse',
-    sessionId: input.session_id,
-    timestamp: new Date().toISOString(),
-    payload: {
-      toolName: input.tool_name,
-      durationMs: input.duration_ms,
-      wasSuccessful: input.was_successful,
-    },
-  });
-}
+function handleEvent(config: { baseUrl: string; apiKey: string }, input: HookInput): void {
+  // Forward the full stdin as payload — capture everything Claude Code sends
+  const { hook_event_name, session_id, ...stdinPayload } = input;
 
-function handlePostToolUseFailure(config: { baseUrl: string; apiKey: string }, input: HookInput): void {
   sendEvent(config.baseUrl, config.apiKey, {
-    eventType: 'PostToolUseFailure',
-    sessionId: input.session_id,
+    eventType: hook_event_name,
+    sessionId: session_id,
     timestamp: new Date().toISOString(),
-    payload: {
-      toolName: input.tool_name,
-      errorType: input.error_type,
-    },
+    payload: stdinPayload,
   });
 }
 
 function handleStop(config: { baseUrl: string; apiKey: string; legacyIngest: boolean }, input: HookInput): void {
-  // Send lightweight stop event
   const claudeJson = readClaudeJson();
+  const { hook_event_name, session_id, ...stdinPayload } = input;
+
+  // Enrich Stop event with .claude.json summary
+  const summary = claudeJson ? extractStopSummary(claudeJson) : {};
+
   sendEvent(config.baseUrl, config.apiKey, {
     eventType: 'Stop',
-    sessionId: input.session_id,
+    sessionId: session_id,
     timestamp: new Date().toISOString(),
     payload: {
-      cwd: input.cwd,
+      ...stdinPayload,
+      summary,
     },
   });
 
   // Optionally send full snapshot to /ingest (legacy mode)
   if (config.legacyIngest && claudeJson) {
     fireAndForgetIngest(config.baseUrl, config.apiKey, {
-      sessionId: input.session_id,
+      sessionId: session_id,
       cwd: input.cwd,
       claudeJson,
       collectorVersion: '0.2.0',
@@ -118,24 +117,19 @@ function handleStop(config: { baseUrl: string; apiKey: string; legacyIngest: boo
 }
 
 async function handleSessionEnd(config: { baseUrl: string; apiKey: string }, input: HookInput): Promise<void> {
+  const { hook_event_name, session_id, ...stdinPayload } = input;
+
   sendEvent(config.baseUrl, config.apiKey, {
     eventType: 'SessionEnd',
-    sessionId: input.session_id,
+    sessionId: session_id,
     timestamp: new Date().toISOString(),
-    payload: {
-      cwd: input.cwd,
-    },
+    payload: stdinPayload,
   });
 
-  // Upload transcript if available
-  const transcriptDir = path.join(os.homedir(), '.claude', 'projects');
-  // The transcript path depends on the project — try the session-specific .jsonl
-  // Claude Code stores transcripts at ~/.claude/projects/<project-hash>/<session-id>.jsonl
-  // We can't know the exact project hash, so we search for the session file
-  const { findTranscript } = await import('../utils/findTranscript');
-  const transcriptPath = findTranscript(input.session_id);
+  // Upload transcript — use transcript_path from stdin if available
+  const transcriptPath = input.transcript_path;
   if (transcriptPath) {
-    await uploadTranscript(config.baseUrl, config.apiKey, input.session_id, transcriptPath);
+    await uploadTranscript(config.baseUrl, config.apiKey, session_id, transcriptPath);
   }
 }
 
@@ -158,23 +152,14 @@ export async function hook(): Promise<void> {
   }
 
   switch (input.hook_event_name) {
-    case 'SessionStart':
-      handleSessionStart(config, input);
-      break;
-    case 'PostToolUse':
-      handlePostToolUse(config, input);
-      break;
-    case 'PostToolUseFailure':
-      handlePostToolUseFailure(config, input);
-      break;
     case 'Stop':
       handleStop(config, input);
       break;
     case 'SessionEnd':
       await handleSessionEnd(config, input);
       break;
+    default:
+      handleEvent(config, input);
+      break;
   }
-
-  // No process.exit() — unref'd sockets let the process exit naturally
-  // after data is flushed to the OS buffer. Hook timeout (5s/15s) is the backstop.
 }
