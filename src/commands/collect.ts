@@ -67,7 +67,7 @@ export async function collect(): Promise<void> {
     collectedAt: new Date().toISOString(),
   };
 
-  fireAndForget(config.endpoint, config.apiKey, payload);
+  fireAndForget(`${config.baseUrl}/ingest`, config.apiKey, payload);
 
   // Exit immediately — don't wait for the HTTP request
   process.exit(0);

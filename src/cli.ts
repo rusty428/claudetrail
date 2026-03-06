@@ -10,9 +10,19 @@ async function main() {
       await init(token);
       break;
     }
+    case 'hook': {
+      const { hook } = await import('./commands/hook');
+      await hook();
+      break;
+    }
     case 'collect': {
       const { collect } = await import('./commands/collect');
       await collect();
+      break;
+    }
+    case 'upgrade': {
+      const { upgrade } = await import('./commands/upgrade');
+      await upgrade();
       break;
     }
     case '--version':
@@ -23,8 +33,10 @@ async function main() {
     }
     default: {
       console.log('Usage:');
-      console.log('  claudetrail init <api-token>   Configure token and Stop hook');
-      console.log('  claudetrail collect             Capture and send telemetry (called by Stop hook)');
+      console.log('  claudetrail init <api-token>   Configure token and hooks');
+      console.log('  claudetrail hook               Handle hook events (called by Claude Code hooks)');
+      console.log('  claudetrail collect             Capture and send telemetry (legacy Stop hook)');
+      console.log('  claudetrail upgrade             Upgrade hook configuration');
       console.log('  claudetrail --version           Show version');
       break;
     }
