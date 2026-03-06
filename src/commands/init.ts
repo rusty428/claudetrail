@@ -2,9 +2,18 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
-import { writeConfig } from '../config';
+import { writeConfig, DEFAULT_BASE_URL } from '../config';
 
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
+
+const HOOK_EVENTS = ['SessionStart', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SessionEnd'] as const;
+const HOOK_TIMEOUTS: Record<string, number> = {
+  SessionStart: 5,
+  PostToolUse: 5,
+  PostToolUseFailure: 5,
+  Stop: 5,
+  SessionEnd: 15,
+};
 
 function readSettings(): Record<string, unknown> {
   try {
@@ -30,6 +39,57 @@ function askConfirm(question: string): Promise<boolean> {
   });
 }
 
+function hasClaudetrailHook(hookEntries: Record<string, unknown>[]): boolean {
+  return hookEntries.some((h: Record<string, unknown>) => {
+    const innerHooks = h.hooks as Record<string, unknown>[];
+    return innerHooks?.some((ih) => (ih.command as string)?.includes('claudetrail'));
+  });
+}
+
+function makeHookEntry(timeout: number) {
+  return {
+    matcher: '',
+    hooks: [
+      {
+        type: 'command',
+        command: 'claudetrail hook',
+        timeout,
+      },
+    ],
+  };
+}
+
+export function configureHooks(): void {
+  const settings = readSettings();
+  const hooks = (settings.hooks || {}) as Record<string, unknown[]>;
+
+  for (const eventName of HOOK_EVENTS) {
+    const existing = (hooks[eventName] || []) as Record<string, unknown>[];
+
+    if (hasClaudetrailHook(existing)) {
+      // Upgrade existing entry: replace old `claudetrail collect` with `claudetrail hook`
+      for (const entry of existing) {
+        const innerHooks = entry.hooks as Record<string, unknown>[];
+        if (innerHooks) {
+          for (const ih of innerHooks) {
+            if ((ih.command as string)?.includes('claudetrail')) {
+              ih.command = 'claudetrail hook';
+              ih.timeout = HOOK_TIMEOUTS[eventName];
+            }
+          }
+        }
+      }
+    } else {
+      existing.push(makeHookEntry(HOOK_TIMEOUTS[eventName]));
+    }
+
+    hooks[eventName] = existing;
+  }
+
+  settings.hooks = hooks;
+  writeSettings(settings);
+}
+
 export async function init(token: string): Promise<void> {
   if (!token) {
     console.error('Usage: claudetrail init <api-token>');
@@ -41,49 +101,22 @@ export async function init(token: string): Promise<void> {
     process.exit(1);
   }
 
-  // Write config
+  // Write config with baseUrl
   writeConfig({
     apiKey: token,
-    endpoint: 'https://api.claudetrail.com/ingest',
+    baseUrl: DEFAULT_BASE_URL,
+    legacyIngest: true,
   });
   console.log('Token saved to ~/.claudetrail');
 
-  // Configure Stop hook
-  const confirmed = await askConfirm('Add ClaudeTrail Stop hook to Claude Code settings?');
+  // Configure hooks
+  const confirmed = await askConfirm('Add ClaudeTrail hooks to Claude Code settings?');
   if (!confirmed) {
-    console.log('Skipped hook configuration. Add it manually to your Claude Code settings.');
+    console.log('Skipped hook configuration. Run "claudetrail upgrade" later to add hooks.');
     return;
   }
 
-  const settings = readSettings();
-  const hooks = (settings.hooks || {}) as Record<string, unknown[]>;
-  const stopHooks = (hooks.Stop || []) as Record<string, unknown>[];
-
-  // Check if already configured
-  const alreadyConfigured = stopHooks.some((h: Record<string, unknown>) => {
-    const innerHooks = h.hooks as Record<string, unknown>[];
-    return innerHooks?.some((ih) => (ih.command as string)?.includes('claudetrail'));
-  });
-
-  if (alreadyConfigured) {
-    console.log('ClaudeTrail Stop hook already configured.');
-    return;
-  }
-
-  stopHooks.push({
-    matcher: '',
-    hooks: [
-      {
-        type: 'command',
-        command: 'claudetrail collect',
-        timeout: 5,
-      },
-    ],
-  });
-
-  hooks.Stop = stopHooks;
-  settings.hooks = hooks;
-  writeSettings(settings);
-  console.log('Stop hook added to Claude Code settings.');
+  configureHooks();
+  console.log(`Hooks configured for: ${HOOK_EVENTS.join(', ')}`);
   console.log('ClaudeTrail is now configured.');
 }
