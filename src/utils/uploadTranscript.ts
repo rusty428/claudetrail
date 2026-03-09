@@ -16,6 +16,7 @@ function postJson(endpoint: string, apiKey: string, data: Record<string, unknown
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
         'x-api-key': apiKey,
+        'User-Agent': 'claudetrail/0.3.2',
       },
     }, (res) => {
       let responseBody = '';
@@ -39,26 +40,33 @@ function postJson(endpoint: string, apiKey: string, data: Record<string, unknown
   });
 }
 
-function uploadFile(uploadUrl: string, filePath: string): void {
-  const parsed = new url.URL(uploadUrl);
-  const fileStream = fs.createReadStream(filePath);
-  const stats = fs.statSync(filePath);
+function uploadFile(uploadUrl: string, filePath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const parsed = new url.URL(uploadUrl);
+    const fileStream = fs.createReadStream(filePath);
+    const stats = fs.statSync(filePath);
 
-  // Presigned S3 URLs are always HTTPS
-  const req = https.request({
-    hostname: parsed.hostname,
-    port: 443,
-    path: parsed.pathname + parsed.search,
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/x-ndjson',
-      'Content-Length': stats.size,
-    },
+    const req = https.request({
+      hostname: parsed.hostname,
+      port: 443,
+      path: parsed.pathname + parsed.search,
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/x-ndjson',
+        'Content-Length': stats.size,
+        'User-Agent': 'claudetrail/0.3.2',
+      },
+    }, (res) => {
+      res.resume();
+      res.on('end', () => {
+        if (res.statusCode === 200) resolve();
+        else reject(new Error(`S3 upload failed: ${res.statusCode}`));
+      });
+    });
+
+    req.on('error', reject);
+    fileStream.pipe(req);
   });
-
-  req.on('error', () => {});
-  req.on('socket', (socket) => { socket.unref(); });
-  fileStream.pipe(req);
 }
 
 export async function uploadTranscript(baseUrl: string, apiKey: string, sessionId: string, transcriptPath: string): Promise<void> {
@@ -66,8 +74,8 @@ export async function uploadTranscript(baseUrl: string, apiKey: string, sessionI
 
   try {
     const { uploadUrl } = await postJson(`${baseUrl}/presign`, apiKey, { sessionId });
-    uploadFile(uploadUrl, transcriptPath);
+    await uploadFile(uploadUrl, transcriptPath);
   } catch {
-    // Fire and forget — don't block session end
+    // Silent failure — don't block session end
   }
 }
