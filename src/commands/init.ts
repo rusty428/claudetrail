@@ -30,6 +30,8 @@ function configureOtelSettings(apiKey: string, baseUrl: string): void {
   env['OTEL_EXPORTER_OTLP_PROTOCOL'] = 'http/json';
   env['OTEL_EXPORTER_OTLP_ENDPOINT'] = `${baseUrl}/otlp`;
   env['OTEL_EXPORTER_OTLP_HEADERS'] = `x-api-key=${apiKey}`;
+  env['OTEL_LOG_USER_PROMPTS'] = '1';
+  env['OTEL_LOG_TOOL_DETAILS'] = '1';
   settings.env = env;
 
   // Configure SessionEnd hook only
