@@ -15,6 +15,17 @@ async function main() {
       await hook();
       break;
     }
+    case 'upload': {
+      const { upload } = await import('./commands/upload');
+      const sessionId = process.argv[3];
+      const transcriptPath = process.argv[4];
+      if (!sessionId || !transcriptPath) {
+        console.error('Usage: claudetrail upload <sessionId> <transcriptPath>');
+        process.exit(1);
+      }
+      await upload(sessionId, transcriptPath);
+      break;
+    }
     case 'upgrade': {
       const { upgrade } = await import('./commands/upgrade');
       await upgrade();

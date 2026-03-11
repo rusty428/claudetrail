@@ -1,5 +1,4 @@
-import { readConfig } from '../config';
-import { uploadTranscript } from '../utils/uploadTranscript';
+import { spawn } from 'child_process';
 import { log } from '../utils/log';
 
 interface HookInput {
@@ -21,12 +20,6 @@ function readStdin(): Promise<string> {
 export async function hook(): Promise<void> {
   log('hook', 'started');
 
-  const config = readConfig();
-  if (!config) {
-    log('hook', 'no config found, exiting');
-    process.exit(0);
-  }
-
   const stdinRaw = await readStdin();
   let input: HookInput = { hook_event_name: '', session_id: '' };
   try {
@@ -44,7 +37,18 @@ export async function hook(): Promise<void> {
   }
 
   if (input.transcript_path) {
-    await uploadTranscript(config.baseUrl, config.apiKey, input.session_id, input.transcript_path);
+    // Spawn detached upload process — survives hook cancellation
+    const child = spawn(process.execPath, [
+      require.resolve('../cli'),
+      'upload',
+      input.session_id,
+      input.transcript_path,
+    ], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    log('hook', `spawned upload process pid=${child.pid}`);
   } else {
     log('hook', 'no transcript_path in input, skipping upload');
   }
