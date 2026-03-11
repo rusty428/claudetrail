@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { writeConfig, DEFAULT_BASE_URL } from '../config';
+import { log } from '../utils/log';
 
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
 
@@ -49,7 +50,7 @@ function configureOtelSettings(apiKey: string, baseUrl: string): void {
       hooks: [{
         type: 'command',
         command: 'claudetrail hook',
-        timeout: 15,
+        timeout: 120,
       }],
     });
   }
@@ -61,6 +62,8 @@ function configureOtelSettings(apiKey: string, baseUrl: string): void {
 }
 
 export async function init(token: string): Promise<void> {
+  log('init', 'started');
+
   if (!token) {
     console.error('Usage: claudetrail init <api-token>');
     process.exit(1);
@@ -73,15 +76,19 @@ export async function init(token: string): Promise<void> {
 
   // Write config for transcript upload
   writeConfig({ apiKey: token, baseUrl: DEFAULT_BASE_URL });
+  log('init', 'config written to ~/.claudetrail');
   console.log('Token saved to ~/.claudetrail');
 
   // Configure Claude Code OTel settings + SessionEnd hook
   configureOtelSettings(token, DEFAULT_BASE_URL);
+  log('init', 'claude settings configured');
   console.log('Claude Code configured:');
   console.log('  - OpenTelemetry → api.claudetrail.com/otlp');
   console.log('  - SessionEnd hook → transcript upload');
   console.log('');
   console.log('ClaudeTrail is ready. Start a Claude Code session to begin collecting data.');
+
+  log('init', 'finished');
 }
 
 // Export for upgrade command

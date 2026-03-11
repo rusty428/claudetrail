@@ -1,6 +1,10 @@
 import * as https from 'https';
 import * as fs from 'fs';
 import * as url from 'url';
+import { log } from './log';
+
+const pkg = require('../../package.json');
+const UA = `claudetrail/${pkg.version}`;
 
 function postJson(endpoint: string, apiKey: string, data: Record<string, unknown>): Promise<{ uploadUrl: string; s3Key: string }> {
   return new Promise((resolve, reject) => {
@@ -16,14 +20,14 @@ function postJson(endpoint: string, apiKey: string, data: Record<string, unknown
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
         'x-api-key': apiKey,
-        'User-Agent': 'claudetrail/0.3.2',
+        'User-Agent': UA,
       },
     }, (res) => {
       let responseBody = '';
       res.on('data', (chunk) => { responseBody += chunk; });
       res.on('end', () => {
         if (res.statusCode !== 200) {
-          reject(new Error(`Presign failed: ${res.statusCode}`));
+          reject(new Error(`Presign failed: ${res.statusCode} ${responseBody}`));
           return;
         }
         try {
@@ -54,7 +58,7 @@ function uploadFile(uploadUrl: string, filePath: string): Promise<void> {
       headers: {
         'Content-Type': 'application/x-ndjson',
         'Content-Length': stats.size,
-        'User-Agent': 'claudetrail/0.3.2',
+        'User-Agent': UA,
       },
     }, (res) => {
       res.resume();
@@ -70,12 +74,26 @@ function uploadFile(uploadUrl: string, filePath: string): Promise<void> {
 }
 
 export async function uploadTranscript(baseUrl: string, apiKey: string, sessionId: string, transcriptPath: string): Promise<void> {
-  if (!fs.existsSync(transcriptPath)) return;
+  if (!fs.existsSync(transcriptPath)) {
+    log('upload', `file not found: ${transcriptPath}`);
+    return;
+  }
+
+  const fileSize = fs.statSync(transcriptPath).size;
+  log('upload', `starting presign for session=${sessionId} file=${transcriptPath} size=${(fileSize / 1024).toFixed(1)}KB`);
 
   try {
+    const t0 = Date.now();
     const { uploadUrl } = await postJson(`${baseUrl}/presign`, apiKey, { sessionId });
+    const presignMs = Date.now() - t0;
+    log('upload', `presign OK in ${presignMs}ms`);
+
+    const t1 = Date.now();
     await uploadFile(uploadUrl, transcriptPath);
-  } catch {
-    // Silent failure — don't block session end
+    const uploadMs = Date.now() - t1;
+    log('upload', `S3 PUT OK in ${uploadMs}ms (${(fileSize / 1024).toFixed(1)}KB)`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log('upload', `FAILED: ${msg}`);
   }
 }
